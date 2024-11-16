@@ -1,357 +1,253 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 from bs4 import BeautifulSoup
 import re
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List
+import html
 import json
-import hashlib
 
-class LatexParser:
+def fetch_wikipedia_content(url: str) -> str:
+    """Fetch content from Wikipedia page."""
+    response = requests.get(url)
+    return response.text
+
+def extract_latex_equations(html_content: str) -> List[str]:
     """
-    A class to handle the parsing and processing of LaTeX equations from Wikipedia pages.
+    Extract LaTeX equations from Wikipedia HTML content.
+    Only extracts equations containing our variables of interest (x, y, β, ε).
     """
-    def __init__(self):
-        # Common LaTeX variable patterns
-        self.variable_patterns = {
-            'single': r'(?<![\\\w])([a-zA-Z])(?![\w_])',  # Single letter variables
-            'subscript': r'([a-zA-Z])_\{([^}]+)\}|([a-zA-Z])_([0-9])',  # Subscripted variables
-            'greek': r'\\([a-zA-Z]+)\b',  # Greek letters
-            'vector': r'\\mathbf\{([a-zA-Z])\}'  # Vector notation
-        }
-        
-    def fetch_wikipedia_content(self, url: str) -> str:
-        """Fetch content from Wikipedia page with error handling."""
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            return response.text
-        except requests.RequestException as e:
-            st.error(f"Error fetching Wikipedia content: {str(e)}")
-            return ""
-
-    def extract_equations(self, html_content: str) -> List[Tuple[str, str]]:
-        """
-        Extract LaTeX equations and their context from Wikipedia HTML content.
-        Returns a list of tuples (equation, context).
-        """
-        soup = BeautifulSoup(html_content, 'html.parser')
-        equations = []
-        
-        # Find all math elements with display style
-        math_elements = soup.find_all(['span', 'math'], class_=['mwe-math-element'])
-        
-        for math_elem in math_elements:
-            # Get context (surrounding paragraph text)
-            context = self._get_equation_context(math_elem)
-            
-            # Find LaTeX annotation
-            annotation = math_elem.find('annotation', encoding='application/x-tex')
-            if annotation and annotation.string:
-                latex = self._clean_latex(annotation.string)
-                if self._is_meaningful_equation(latex):
-                    equations.append((latex, context))
-        
-        return equations
-
-    def _clean_latex(self, latex: str) -> str:
-        """Clean up LaTeX code for better processing."""
-        # Remove display style commands but preserve the content
-        latex = re.sub(r'\\displaystyle\s*', '', latex)
-        
-        # Handle vector notation consistently
-        latex = re.sub(r'\\mathbf\s*\{([^}]+)\}', r'\\boldsymbol{\1}', latex)
-        latex = re.sub(r'\\vec\s*\{([^}]+)\}', r'\\boldsymbol{\1}', latex)
-        
-        # Handle left/right delimiters - preserve them but clean up spacing
-        latex = re.sub(r'\\left\s*([{[(|])', r'\\left\1', latex)
-        latex = re.sub(r'\\right\s*([})\]|])', r'\\right\1', latex)
-        
-        # Clean up subscripts and superscripts
-        latex = re.sub(r'_\s*(\d+)', r'_{\1}', latex)  # Add braces to single number subscripts
-        latex = re.sub(r'\^\s*(\d+)', r'^{\1}', latex)  # Add braces to single number superscripts
-        
-        # Clean up spacing around operators
-        latex = re.sub(r'\s*([=+\-*/])\s*', r' \1 ', latex)
-        
-        # Remove multiple spaces
-        latex = re.sub(r'\s+', ' ', latex)
-        
-        return latex.strip()
-
-    def _is_meaningful_equation(self, latex: str) -> bool:
-        """Check if equation is meaningful (contains variables and is not too simple)."""
-        return (len(latex) > 5 and 
-                not latex.isdigit() and 
-                any(re.search(pattern, latex) for pattern in self.variable_patterns.values()))
-
-    def _get_equation_context(self, math_elem) -> str:
-        """Get the surrounding context of an equation."""
-        parent = math_elem.find_parent(['p', 'div'])
-        if parent:
-            # Get all text nodes while excluding math elements
-            texts = []
-            for element in parent.contents:
-                if isinstance(element, str):
-                    # Direct text node
-                    texts.append(element.strip())
-                elif element.name != 'math':
-                    # Non-math element
-                    texts.append(element.get_text().strip())
-            
-            context = ' '.join(text for text in texts if text)
-            return context[:200] + '...' if len(context) > 200 else context
-        return ""
-
-    def identify_variables(self, latex: str) -> Dict[str, Set[str]]:
-        """
-        Identify all variables in a LaTeX equation and categorize them.
-        """
-        variables = {
-            'single': set(),
-            'subscript': set(),
-            'greek': set(),
-            'vector': set()
-        }
-        
-        # Updated patterns with more precise matching
-        patterns = {
-            'single': r'(?<![\\\w])([a-zA-Z])(?![\w_\{])',  # Single letter variables
-            'subscript': r'([a-zA-Z])_\{([^}]+)\}|([a-zA-Z])_([0-9])',  # Subscripted variables
-            'greek': r'\\(?!(?:left|right|begin|end|boldsymbol|mathbf|vec))([a-zA-Z]+)(?![a-zA-Z])',  # Greek letters excluding commands
-            'vector': r'\\(?:boldsymbol|mathbf|vec)\{([a-zA-Z][^}]*)\}'  # Vector notation
-        }
-        
-        for var_type, pattern in patterns.items():
-            matches = re.finditer(pattern, latex)
-            for match in matches:
-                if var_type == 'subscript':
-                    base = match.group(1) or match.group(3)
-                    sub = match.group(2) or match.group(4)
-                    variables[var_type].add(f"{base}_{{{sub}}}")
-                elif var_type == 'greek':
-                    var = '\\' + match.group(1)
-                    variables[var_type].add(var)
-                elif var_type == 'vector':
-                    var = match.group(1)
-                    variables[var_type].add(var)
-                else:
-                    var = match.group(1)
-                    variables[var_type].add(var)
-        
-        return variables
-
-def create_streamlit_interface():
-    """Create the Streamlit web interface with enhanced features."""
-    st.set_page_config(page_title="LaTeX Equation Colorizer", layout="wide")
+    soup = BeautifulSoup(html_content, 'html.parser')
+    equations = set()
     
-    # Enhanced Custom CSS
-    st.markdown("""
+    math_elements = soup.find_all('math')
+    
+    for math_elem in math_elements:
+        annotation = math_elem.find('annotation', encoding='application/x-tex')
+        if annotation and annotation.string:
+            latex = annotation.string.strip()
+            latex = re.sub(r'\s+', ' ', latex)
+            latex = latex.replace('\\displaystyle', '')
+            
+            if (any(var in latex.lower() for var in ['x', 'y', '\\beta', '\\varepsilon']) 
+                and len(latex) > 5 
+                and not latex.isdigit()):
+                equations.add(latex)
+    
+    return list(equations)
+
+def colorize_variables(equation: str, colors: Dict[str, str]) -> str:
+    """
+    Apply colors to variables in LaTeX equation.
+    Handles both regular variables and their vector/matrix forms.
+    """
+    try:
+        if not any(env in equation for env in ['\\begin{align', '\\begin{equation']):
+            equation = f'\\begin{{align*}}\n{equation}\n\\end{{align*}}'
+        
+        equation = re.sub(r'\\mathbf\{([xy])\}', 
+                         lambda m: fr'\\mathbf{{\color{{{colors[m.group(1)]}}}{{{m.group(1)}}}}}', 
+                         equation)
+        
+        for var in ['x', 'y']:
+            equation = re.sub(fr'{var}_{{([^}}]+)}}', 
+                            fr'\\color{{{colors[var]}}}{{{var}}}_{{\\1}}', 
+                            equation)
+            equation = re.sub(fr'{var}_([0-9])', 
+                            fr'\\color{{{colors[var]}}}{{{var}}}_\\1', 
+                            equation)
+            equation = re.sub(fr'(?<![\\\w]){var}(?![\w_])', 
+                            fr'\\color{{{colors[var]}}}{{{var}}}', 
+                            equation)
+        
+        equation = re.sub(r'\\beta\b', 
+                         fr'\\color{{{colors["β"]}}}{{\\beta}}', 
+                         equation)
+        equation = re.sub(r'\\varepsilon\b', 
+                         fr'\\color{{{colors["ε"]}}}{{\\varepsilon}}', 
+                         equation)
+        
+        return equation
+    except Exception as e:
+        st.error(f"Error processing equation: {str(e)}")
+        return equation
+
+def create_interactive_html(equations: List[str], colors: Dict[str, str]) -> str:
+    """Create an interactive HTML page with color controls and equations."""
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>LaTeX Equation Colorizer</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+        <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
         <style>
-        .equation-container {
-            background: #f8f9fa;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            margin: 1rem 0;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        .equation-container:hover {
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            transform: translateY(-2px);
-        }
-        .context-box {
-            font-size: 0.9rem;
-            color: #666;
-            margin-bottom: 1rem;
-        }
-        .variable-list {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.5rem;
-            margin: 1rem 0;
-        }
-        .color-customizer {
-            padding: 1rem;
-            background: #fff;
-            border-radius: 0.5rem;
-            margin-top: 1rem;
-        }
-        .latex-code {
-            background: #f1f1f1;
-            padding: 0.5rem;
-            border-radius: 0.3rem;
-            font-family: monospace;
-            margin-top: 0.5rem;
-        }
+            body { font-family: Arial, sans-serif; max-width: 1200px; margin: 0 auto; padding: 20px; }
+            .color-controls { display: flex; gap: 20px; margin-bottom: 20px; }
+            .color-control { display: flex; flex-direction: column; align-items: center; }
+            .equation-container { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+            .original-latex { margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 3px; font-size: 14px; }
+            .katex { font-size: 1.2em; }
+            .error { color: red; margin: 10px 0; }
         </style>
-    """, unsafe_allow_html=True)
+    </head>
+    <body>
+        <div class="color-controls">
+    """
+    
+    # Add color pickers
+    for var, color in colors.items():
+        html_content += f"""
+            <div class="color-control">
+                <label>{var} variables</label>
+                <input type="color" value="{color}" onchange="updateColor('{var}', this.value)">
+            </div>
+        """
+    
+    html_content += """
+        </div>
+        <div id="equations">
+    """
+    
+    # Add equations
+    for i, eq in enumerate(equations, 1):
+        safe_eq = html.escape(eq)
+        html_content += f"""
+            <div class="equation-container">
+                <h3>Equation {i}</h3>
+                <div id="equation_{i}"></div>
+                <div id="error_{i}" class="error"></div>
+                <details>
+                    <summary>Show original LaTeX</summary>
+                    <pre class="original-latex">{safe_eq}</pre>
+                </details>
+            </div>
+        """
+    
+    # Add JavaScript for color updating and equation rendering
+    html_content += """
+        </div>
+        <script>
+            let colors = """ + json.dumps(colors) + """;
+            let equations = """ + json.dumps(equations) + """;
+            
+            function updateColor(variable, color) {
+                colors[variable] = color;
+                renderAllEquations();
+            }
+            
+            function colorizeEquation(eq) {
+                try {
+                    // Add equation alignment wrapper if not already present
+                    if (!eq.includes('\\begin{align') && !eq.includes('\\begin{equation}')) {
+                        eq = '\\\\begin{align*}' + eq + '\\\\end{align*}';
+                    }
+                    
+                    // Handle vector notation first
+                    eq = eq.replace(/\\mathbf\{([xy])\}/g, (match, p1) => 
+                        `\\\\mathbf{\\\\color{${colors[p1]}}{${p1}}}`
+                    );
+                    
+                    // Handle subscripted variables
+                    ['x', 'y'].forEach(var_name => {
+                        // Handle subscripts with curly braces
+                        eq = eq.replace(new RegExp(`${var_name}_\\{([^}]+)\\}`, 'g'), 
+                            (match, p1) => `\\\\color{${colors[var_name]}}{${var_name}}_\\{${p1}\\}`
+                        );
+                        
+                        // Handle single number subscripts
+                        eq = eq.replace(new RegExp(`${var_name}_([0-9])`, 'g'), 
+                            (match, p1) => `\\\\color{${colors[var_name]}}{${var_name}}_${p1}`
+                        );
+                        
+                        // Handle standalone variables
+                        eq = eq.replace(new RegExp(`(?<![\\\\\\w])${var_name}(?![\\w_])`, 'g'), 
+                            `\\\\color{${colors[var_name]}}{${var_name}}`
+                        );
+                    });
+                    
+                    // Handle Greek letters
+                    eq = eq.replace(/\\beta\\b/g, 
+                        `\\\\color{${colors['β']}}{\\\\beta}`
+                    );
+                    eq = eq.replace(/\\varepsilon\\b/g, 
+                        `\\\\color{${colors['ε']}}{\\\\varepsilon}`
+                    );
+                    
+                    return eq;
+                } catch (error) {
+                    console.error('Error in colorizeEquation:', error);
+                    return eq;
+                }
+            }
+            
+            function renderAllEquations() {
+                equations.forEach((eq, i) => {
+                    const containerEl = document.getElementById(`equation_${i + 1}`);
+                    const errorEl = document.getElementById(`error_${i + 1}`);
+                    try {
+                        const colorized = colorizeEquation(eq);
+                        katex.render(colorized, containerEl, {
+                            displayMode: true,
+                            throwOnError: false,
+                            strict: false
+                        });
+                        errorEl.textContent = '';
+                    } catch (error) {
+                        console.error(`Error rendering equation ${i + 1}:`, error);
+                        errorEl.textContent = `Error: ${error.message}`;
+                        containerEl.textContent = eq;
+                    }
+                });
+            }
+            
+            // Initial render
+            document.addEventListener('DOMContentLoaded', renderAllEquations);
+        </script>
+    </body>
+    </html>
+    """
+    return html_content
 
-    st.title("Enhanced LaTeX Equation Colorizer")
+
+def create_streamlit_app():
+    st.title("LaTeX Equation Colorizer")
     
-    # Initialize session state for storing equation colors
-    if 'equation_colors' not in st.session_state:
-        st.session_state.equation_colors = {}
-    
-    # Initialize a global counter in session state if it doesn't exist
-    if 'color_picker_counter' not in st.session_state:
-        st.session_state.color_picker_counter = 0
-    
-    # Initialize parser
-    parser = LatexParser()
-    
-    # Sidebar for global settings
-    with st.sidebar:
-        st.header("Settings")
-        url = st.text_input(
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        wiki_url = st.text_input(
             "Wikipedia URL",
-            value="https://en.wikipedia.org/wiki/Ordinary_least_squares"
+            value="https://en.wikipedia.org/wiki/Ordinary_least_squares",
+            help="Enter the Wikipedia URL containing LaTeX equations"
         )
-        
-        st.subheader("Default Color Scheme")
-        default_colors = {
-            'x': '#FF4B4B',  # Red
-            'y': '#45B08C',  # Green
-            'β': '#3B7DD8',  # Blue
-            'ε': '#9C4DD9'   # Purple
-        }
-        
-        # Global color scheme
-        color_scheme = {}
-        for var, color in default_colors.items():
-            color_scheme[var] = st.color_picker(
-                f"{var} variables",
-                color,
-                key=f"default_{var}_color"
-            )
-        
-        # Advanced settings
-        st.subheader("Advanced Settings")
-        show_context = st.checkbox("Show equation context", value=True)
-        group_similar = st.checkbox("Group similar variables", value=True)
+    with col2:
+        process_button = st.button("Process Equations", type="primary", use_container_width=True)
     
-    # Main content
-    if st.button("Process Equations", type="primary"):
-        with st.spinner("Fetching and processing equations..."):
-            content = parser.fetch_wikipedia_content(url)
-            if content:
-                equations = parser.extract_equations(content)
-                
-                st.markdown(f"### Found {len(equations)} equations")
-                
-                for i, (eq, context) in enumerate(equations, 1):
-                    # Generate unique ID for each equation
-                    eq_id = hashlib.md5(eq.encode()).hexdigest()
-                    
-                    # Initialize colors for this equation if not exists
-                    if eq_id not in st.session_state.equation_colors:
-                        st.session_state.equation_colors[eq_id] = color_scheme.copy()
-                    
-                    with st.container():
-                        st.markdown(f"#### Equation {i}")
-                        
-                        # Create tabs for different views
-                        eq_tab, custom_tab, latex_tab = st.tabs(["Equation", "Customize", "LaTeX Code"])
-                        
-                        with eq_tab:
-                            if show_context:
-                                st.markdown(f"<div class='context-box'>{context}</div>", 
-                                          unsafe_allow_html=True)
-                            
-                            # Display equation with current colors
-                            variables = parser.identify_variables(eq)
-                            colorized_eq = colorize_equation(
-                                eq, 
-                                variables, 
-                                st.session_state.equation_colors[eq_id]
-                            )
-                            st.latex(colorized_eq)
-                        
-                        with custom_tab:
-                            # Color customization section
-                            st.markdown("<div class='color-customizer'>", unsafe_allow_html=True)
-                            
-                            # Identify variables
-                            variables = parser.identify_variables(eq)
-                            
-                            cols = st.columns(4)
-                            current_col = 0
-                            
-                            # Create color pickers for each variable type
-                            for var_type, vars in variables.items():
-                                for var in sorted(vars):
-                                    base_var = var[0] if var_type != 'greek' else var
-                                    
-                                    # Increment the global counter
-                                    st.session_state.color_picker_counter += 1
-                                    
-                                    # Create a unique key using the global counter
-                                    unique_key = f"color_picker_{eq_id}_{st.session_state.color_picker_counter}"
-                                    
-                                    with cols[current_col]:
-                                        new_color = st.color_picker(
-                                            f"{var} ({var_type})",
-                                            st.session_state.equation_colors[eq_id].get(base_var, '#000000'),
-                                            key=unique_key
-                                        )
-                                        st.session_state.equation_colors[eq_id][base_var] = new_color
-                                            
-                                    current_col = (current_col + 1) % 4
-                            
-                            st.markdown("</div>", unsafe_allow_html=True)
-                            
-                            # Preview of colorized equation
-                            st.markdown("### Preview")
-                            st.latex(colorized_eq)
-                        
-                        with latex_tab:
-                            st.code(eq, language="latex")
-                        
-                        st.markdown("---")
+    colors = {
+        'x': '#FF4B4B',
+        'y': '#45B08C',
+        'β': '#3B7DD8',
+        'ε': '#9C4DD9'
+    }
 
-def colorize_equation(latex: str, variables: Dict[str, Set[str]], 
-                     color_scheme: Dict[str, str]) -> str:
-    """
-    Apply colors to variables in LaTeX equation based on the color scheme.
-    """
-    colorized = latex
-    
-    # Add equation alignment if not present
-    if not any(env in colorized for env in ['\\begin{align', '\\begin{equation']):
-        colorized = f'\\begin{{align*}}\n{colorized}\n\\end{{align*}}'
-    
-    # Sort variables by length (longest first) to avoid partial matches
-    for var_type, vars in variables.items():
-        sorted_vars = sorted(vars, key=len, reverse=True)
-        for var in sorted_vars:
-            if var[0] in color_scheme:  # Match base variable (without subscript)
-                color = color_scheme[var[0]]
-                if var_type == 'greek':
-                    colorized = re.sub(
-                        fr'({var})(?![a-zA-Z])',
-                        fr'\\color{{{color}}}{{\1}}',
-                        colorized
-                    )
-                elif var_type == 'vector':
-                    colorized = re.sub(
-                        fr'\\(?:boldsymbol|mathbf|vec)\{{{var}\}}',
-                        fr'\\boldsymbol{{\\color{{{color}}}{{{var}}}}}',
-                        colorized
-                    )
-                elif var_type == 'subscript':
-                    base, sub = var.split('_', 1)
-                    colorized = re.sub(
-                        fr'({base})_{sub}',
-                        fr'\\color{{{color}}}{{\1}}_{sub}',
-                        colorized
-                    )
-                else:
-                    colorized = re.sub(
-                        fr'(?<![\\\w])({var})(?![\w_{{}}])',
-                        fr'\\color{{{color}}}{{\1}}',
-                        colorized
-                    )
-    
-    return colorized
+    if process_button:
+        try:
+            with st.spinner("Fetching and processing equations..."):
+                content = fetch_wikipedia_content(wiki_url)
+                equations = extract_latex_equations(content)
+                
+                if not equations:
+                    st.warning("⚠️ No equations found. Please check the URL.")
+                    return
+                
+                # Create interactive HTML page
+                html_content = create_interactive_html(equations, colors)
+                
+                # Display in iframe
+                components.html(html_content, height=800, scrolling=True)
+                
+        except Exception as e:
+            st.error(f"❌ An error occurred: {str(e)}")
 
 if __name__ == "__main__":
-    create_streamlit_interface()
+    create_streamlit_app()
