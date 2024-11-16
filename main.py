@@ -3,7 +3,6 @@ import requests
 from bs4 import BeautifulSoup
 import re
 from typing import Dict, List
-import json
 
 def fetch_wikipedia_content(url: str) -> str:
     """Fetch content from Wikipedia page."""
@@ -11,55 +10,63 @@ def fetch_wikipedia_content(url: str) -> str:
     return response.text
 
 def extract_latex_equations(html_content: str) -> List[str]:
-    """Extract LaTeX equations from Wikipedia HTML content."""
+    """
+    Extract LaTeX equations from Wikipedia HTML content.
+    Only extracts equations containing our variables of interest (x, y, β, ε).
+    """
     soup = BeautifulSoup(html_content, 'html.parser')
+    equations = set()  # Using a set to remove duplicates
     
-    # First, find the relevant section
-    content_div = soup.find('div', {'class': 'mw-parser-output'})
-    if not content_div:
-        return []
+    # Find all math elements
+    math_elements = soup.find_all('math')
     
-    equations = []
-    
-    # Find all math elements within the content div
-    math_elements = content_div.find_all(['span', 'math'], 
-        class_=['mwe-math-element'])
-    
-    for element in math_elements:
-        # Try to find LaTeX in annotation
-        annotation = element.find('annotation', encoding='application/x-tex')
+    for math_elem in math_elements:
+        # Find the LaTeX annotation within the math element
+        annotation = math_elem.find('annotation', encoding='application/x-tex')
         if annotation and annotation.string:
             latex = annotation.string.strip()
-            # Only include equations that contain our variables of interest
-            if any(var in latex for var in ['x', 'y', 'β', 'ε']) and len(latex) > 5:
-                equations.append(latex)
+            # Clean up the LaTeX
+            latex = re.sub(r'\s+', ' ', latex)  # Remove extra whitespace
+            latex = latex.replace('\\displaystyle', '')  # Remove displaystyle commands
+            
+            # Only include meaningful equations with our variables
+            if (any(var in latex.lower() for var in ['x', 'y', '\\beta', '\\varepsilon']) 
+                and len(latex) > 5 
+                and not latex.isdigit()):
+                equations.add(latex)
     
-    return equations
+    return list(equations)
 
 def colorize_variables(equation: str, colors: Dict[str, str]) -> str:
-    """Apply colors to variables in LaTeX equation."""
+    """
+    Apply colors to variables in LaTeX equation.
+    Handles both regular variables and their vector/matrix forms.
+    """
     try:
-        # Create a mapping for Greek letters and their variations
-        greek_map = {
-            'β': r'\\beta',
-            'ε': r'\\epsilon'
-        }
+        # Handle vector notation first
+        equation = re.sub(r'\\mathbf\{([xy])\}', 
+                         lambda m: fr'\\mathbf{{\color{{{colors[m.group(1)]}}}{{{m.group(1)}}}}}', 
+                         equation)
         
-        for var, color in colors.items():
-            # Handle Greek letters
-            if var in greek_map:
-                pattern = fr'{greek_map[var]}'
-            else:
-                # Handle regular variables (x, y) with their subscripts
-                pattern = fr'(?<![\\\w]){var}(?:_[{{\d+}}]|\d+)?(?![\w])'
-            
-            # Create the color command
-            color_cmd = fr'\\color{{{color}}}'
-            
-            # Replace the pattern with colored version
-            equation = re.sub(pattern, 
-                            lambda m: f'{color_cmd}{{{m.group(0)}}}', 
+        # Handle subscripted variables
+        for var in ['x', 'y']:
+            equation = re.sub(fr'{var}_{{([^}}]+)}}', 
+                            fr'\\color{{{colors[var]}}}{{{var}}}_{{\\1}}', 
                             equation)
+            equation = re.sub(fr'{var}_([0-9])', 
+                            fr'\\color{{{colors[var]}}}{{{var}}}_\\1', 
+                            equation)
+            equation = re.sub(fr'(?<![\\\w]){var}(?![\w_])', 
+                            fr'\\color{{{colors[var]}}}{{{var}}}', 
+                            equation)
+        
+        # Handle Greek letters
+        equation = re.sub(r'\\beta\b', 
+                         fr'\\color{{{colors["β"]}}}{{\\beta}}', 
+                         equation)
+        equation = re.sub(r'\\varepsilon\b', 
+                         fr'\\color{{{colors["ε"]}}}{{\\varepsilon}}', 
+                         equation)
         
         return equation
     except Exception as e:
@@ -67,29 +74,30 @@ def colorize_variables(equation: str, colors: Dict[str, str]) -> str:
         return equation
 
 def create_streamlit_app():
+    """Create the Streamlit web interface."""
     st.title("LaTeX Variable Colorizer")
     
-    # Input for Wikipedia URL
+    # URL input with default value
     wiki_url = st.text_input(
         "Wikipedia URL",
         value="https://en.wikipedia.org/wiki/Ordinary_least_squares",
-        help="Enter the full Wikipedia URL"
+        help="Enter the Wikipedia URL containing LaTeX equations"
     )
     
-    # Color pickers for each variable type with colors matching the image
+    # Color pickers for each variable
     st.subheader("Choose Colors for Variables")
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        x_color = st.color_picker("x variables", "#FF69B4")  # Pink
+        x_color = st.color_picker("x variables", "#FF0000")  # Red
     with col2:
-        y_color = st.color_picker("y variables", "#32CD32")  # Lime green
+        y_color = st.color_picker("y variables", "#00FF00")  # Green
     with col3:
-        beta_color = st.color_picker("β variables", "#4169E1")  # Royal blue
+        beta_color = st.color_picker("β variables", "#0000FF")  # Blue
     with col4:
-        epsilon_color = st.color_picker("ε variables", "#9370DB")  # Medium purple
+        epsilon_color = st.color_picker("ε variables", "#800080")  # Purple
     
-    # Create color mapping
+    # Color mapping dictionary
     colors = {
         'x': x_color,
         'y': y_color,
@@ -100,21 +108,24 @@ def create_streamlit_app():
     if st.button("Process Equations"):
         try:
             with st.spinner("Fetching and processing equations..."):
-                # Fetch content
+                # Get and process equations
                 content = fetch_wikipedia_content(wiki_url)
                 equations = extract_latex_equations(content)
                 
                 if not equations:
-                    st.warning("No equations found on this page. Try another Wikipedia article with mathematical equations.")
+                    st.warning("No equations found. Please check the URL.")
                     return
                 
-                # Display equations
-                st.subheader(f"Found {len(equations)} equations:")
+                # Display processed equations
+                st.subheader(f"Found {len(equations)} unique equations:")
                 for i, eq in enumerate(equations, 1):
-                    if any(var in eq for var in colors.keys()):  # Only show equations with our variables
+                    colorized_eq = colorize_variables(eq, colors)
+                    # Only display if the equation was successfully colorized
+                    if colorized_eq and not colorized_eq.isspace():
                         st.write(f"Equation {i}:")
-                        colorized_eq = colorize_variables(eq, colors)
                         st.latex(colorized_eq)
+                        with st.expander("Show original LaTeX"):
+                            st.code(eq)
                         st.markdown("---")
                     
         except Exception as e:
