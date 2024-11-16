@@ -43,6 +43,10 @@ def colorize_variables(equation: str, colors: Dict[str, str]) -> str:
     Handles both regular variables and their vector/matrix forms.
     """
     try:
+        # Add equation alignment wrapper if not already present
+        if not any(env in equation for env in ['\\begin{align', '\\begin{equation']):
+            equation = f'\\begin{{align*}}\n{equation}\n\\end{{align*}}'
+        
         # Handle vector notation first
         equation = re.sub(r'\\mathbf\{([xy])\}', 
                          lambda m: fr'\\mathbf{{\color{{{colors[m.group(1)]}}}{{{m.group(1)}}}}}', 
@@ -75,61 +79,110 @@ def colorize_variables(equation: str, colors: Dict[str, str]) -> str:
 
 def create_streamlit_app():
     """Create the Streamlit web interface."""
-    st.title("LaTeX Variable Colorizer")
+    # Custom CSS for better styling
+    st.markdown("""
+        <style>
+        .stApp {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .main .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+        }
+        h1 {
+            color: #1E3D59;
+            margin-bottom: 2rem;
+        }
+        h2, h3 {
+            color: #1E3D59;
+            margin-top: 1rem;
+        }
+        .stButton>button {
+            margin-top: 1.5rem;
+        }
+        .color-picker-container {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.title("LaTeX Equation Colorizer")
     
-    # URL input with default value
-    wiki_url = st.text_input(
-        "Wikipedia URL",
-        value="https://en.wikipedia.org/wiki/Ordinary_least_squares",
-        help="Enter the Wikipedia URL containing LaTeX equations"
-    )
-    
-    # Color pickers for each variable
-    st.subheader("Choose Colors for Variables")
-    col1, col2, col3, col4 = st.columns(4)
+    # URL input and Process button in the same row
+    col1, col2 = st.columns([4, 1])
     
     with col1:
-        x_color = st.color_picker("x variables", "#FF0000")  # Red
-    with col2:
-        y_color = st.color_picker("y variables", "#00FF00")  # Green
-    with col3:
-        beta_color = st.color_picker("β variables", "#0000FF")  # Blue
-    with col4:
-        epsilon_color = st.color_picker("ε variables", "#800080")  # Purple
+        wiki_url = st.text_input(
+            "Wikipedia URL",
+            value="https://en.wikipedia.org/wiki/Ordinary_least_squares",
+            help="Enter the Wikipedia URL containing LaTeX equations"
+        )
     
-    # Color mapping dictionary
+    with col2:
+        process_button = st.button("Process Equations", type="primary", use_container_width=True)
+    
+    # Variable Colors in one line
+    st.markdown("### Variable Colors")
+    color_cols = st.columns(4)
+    
+    with color_cols[0]:
+        x_color = st.color_picker("x variables", "#FF4B4B", key="x")  # Softer red
+    with color_cols[1]:
+        y_color = st.color_picker("y variables", "#45B08C", key="y")  # Softer green
+    with color_cols[2]:
+        beta_color = st.color_picker("β variables", "#3B7DD8", key="beta")  # Softer blue
+    with color_cols[3]:
+        epsilon_color = st.color_picker("ε variables", "#9C4DD9", key="epsilon")  # Softer purple
+    
     colors = {
         'x': x_color,
         'y': y_color,
         'β': beta_color,
         'ε': epsilon_color
     }
-    
-    if st.button("Process Equations"):
+
+    # Process equations when button is clicked
+    if process_button:
         try:
             with st.spinner("Fetching and processing equations..."):
-                # Get and process equations
                 content = fetch_wikipedia_content(wiki_url)
                 equations = extract_latex_equations(content)
                 
                 if not equations:
-                    st.warning("No equations found. Please check the URL.")
+                    st.warning("⚠️ No equations found. Please check the URL.")
                     return
                 
-                # Display processed equations
-                st.subheader(f"Found {len(equations)} unique equations:")
+                # Display results in a nice container
+                st.markdown(f"### 📊 Found {len(equations)} unique equations")
+                
                 for i, eq in enumerate(equations, 1):
-                    colorized_eq = colorize_variables(eq, colors)
-                    # Only display if the equation was successfully colorized
-                    if colorized_eq and not colorized_eq.isspace():
-                        st.write(f"Equation {i}:")
-                        st.latex(colorized_eq)
-                        with st.expander("Show original LaTeX"):
-                            st.code(eq)
-                        st.markdown("---")
+                    with st.container():
+                        colorized_eq = colorize_variables(eq, colors)
+                        if colorized_eq and not colorized_eq.isspace():
+                            st.markdown(f"#### Equation {i}")
+                            st.latex(colorized_eq)
+                            
+                            # Show original LaTeX in a cleaner expander
+                            with st.expander("🔍 Show original LaTeX"):
+                                st.code(eq, language="latex")
+                            
+                            # Subtle divider
+                            st.markdown("<hr style='margin: 2rem 0; opacity: 0.2;'>", 
+                                      unsafe_allow_html=True)
                     
         except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
+            st.error(f"❌ An error occurred: {str(e)}")
+
+    # Add helpful footer
+    st.markdown("---")
+    st.markdown("""
+        <div style='text-align: center; color: #666; padding: 1rem;'>
+        📝 This tool helps you visualize mathematical equations by coloring variables.
+        </div>
+    """, unsafe_allow_html=True)
 
 if __name__ == "__main__":
     create_streamlit_app()
